@@ -312,6 +312,66 @@ if (inputVideo){
     inputVideo.addEventListener('loadedmetadata', ()=>{ tryResumeAudio(); });
 }
 
+// --- Enhanced audio routing & monitor for mobile robustness ---
+let __audioRouted = false;
+let __audioMonitorTimer = null;
+let __audioMonitorAttempts = 0;
+
+function setupAudioRouting(){
+    if (!audioEl) return;
+    try{
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        window.__ac = window.__ac || new AC();
+
+        // Create a MediaElementSource only once (creating multiple sources for same element throws)
+        if (!window.__audioSource && typeof window.__ac.createMediaElementSource === 'function'){
+            try{
+                window.__audioSource = window.__ac.createMediaElementSource(audioEl);
+                // optional gain node to control volume programmatically
+                const gain = window.__ac.createGain();
+                gain.gain.value = audioEl.volume || 0.6;
+                window.__audioSource.connect(gain).connect(window.__ac.destination);
+            }catch(e){ console.warn('Could not create MediaElementSource:', e); }
+        }
+        __audioRouted = true;
+    }catch(e){ console.warn('setupAudioRouting failed', e); }
+}
+
+function startAudioMonitor(){
+    if (!audioEl) return;
+    stopAudioMonitor();
+    __audioMonitorAttempts = 0;
+    __audioMonitorTimer = setInterval(async ()=>{
+        if (!audioEl) return stopAudioMonitor();
+        if (document.visibilityState !== 'visible') return; // don't fight when hidden
+        if (audioEl.paused){
+            __audioMonitorAttempts++;
+            try{
+                await tryResumeAudio();
+            }catch(e){}
+            // exponential backoff cap
+            if (__audioMonitorAttempts > 8){ stopAudioMonitor(); }
+        } else {
+            // playing fine; reduce monitoring frequency/stop
+            __audioMonitorAttempts = 0;
+            stopAudioMonitor();
+        }
+    }, 2000);
+}
+
+function stopAudioMonitor(){
+    if (__audioMonitorTimer){ clearInterval(__audioMonitorTimer); __audioMonitorTimer = null; }
+}
+
+// If audio is paused unexpectedly, attempt immediate resume a few times
+if (audioEl){
+    audioEl.addEventListener('pause', ()=>{
+        // schedule immediate attempts but avoid spamming
+        startAudioMonitor();
+    });
+}
+
 /**
  * THREE.JS SETUP
  */

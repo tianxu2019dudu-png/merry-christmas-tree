@@ -359,7 +359,7 @@
                 const src = bg.currentSrc || bg.src || '';
                 const playState = bg.paused ? 'Paused' : 'Playing';
                 status.textContent = src ? `${playState} — ${src.split('/').pop()}` : 'No audio file selected';
-                toggle.textContent = bg.paused ? 'Play' : 'Music Control';
+                toggle.textContent = bg.paused ? 'Play' : 'Pause';
             }
 
             toggle.addEventListener('click', async ()=>{
