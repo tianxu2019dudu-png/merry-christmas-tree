@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dreamlike Christmas Tree - Gesture Interactive</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505; /* Deep dark background, not pure black */
+            font-family: 'Courier New', Courier, monospace;
+        }
+        
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Overlay for initial interaction (Audio Context requirement) */
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #ff6fae;
+            z-index: 10;
+            transition: opacity 1s ease;
+            cursor: pointer;
+            text-align: center;
+            padding: 20px;
+        }
+
+        #overlay h1 {
+            font-weight: 300;
+            text-shadow: 0 0 10px #ff6fae;
+            letter-spacing: 2px;
+        }
+
+        #overlay p {
+            color: #fff;
+            max-width: 600px;
+            line-height: 1.6;
+        }
+
+        .hidden {
+            display: none !important;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Hidden inputs/media */
+        #user-audio-input { display: none; }
+        #bg-music { display: none; }
+        #video-source { display: none; }
+
+        /* Loading indicator */
+        #loading {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+            z-index: 5;
+        }
+        
+        /* Mirror the video element for debugging if needed, but we hide it */
+        .input_video {
+            display: none; 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="overlay">
+        <h1>Merry Christmas</h1>
+        <p>
+            Allow camera access.<br>
+            允许访问摄像头。<br>
+            <b>Open Palm:</b> Scatter Stars<br>
+            <b>张开手掌：</b> 撒播星星<br>
+            <b>Closed Palm:</b> Assemble Tree<br>
+            <b>合拢手掌：</b> 组装圣诞树<br>
+            <b>Pinch (Thumb+Index):</b> Play Memory<br>
+            <b>捏（拇指+食指）：</b> 播放记忆<br>
+            <b>Move Hand:</b> Rotate<br>
+            <b>移动手部：</b> 旋转<br><br>
+            [ Click anywhere to Begin ]<br>
+            [ 点击任意位置开始 ]
+        </p>
+    </div>
+
+    <script>
+        // Fallback inline click handler: ensures the overlay responds immediately
+        // and notifies the module (dispatches a `user-start` event) when clicked.
+        window.__userClickedStart = false;
+        (function(){
+            const overlayEl = document.getElementById('overlay');
+            if (!overlayEl) return;
+            overlayEl.addEventListener('click', () => {
+                // quick visual feedback
+                overlayEl.style.opacity = '0';
+                setTimeout(() => { overlayEl.style.display = 'none'; }, 500);
+                window.__userClickedStart = true;
+                // Attempt to start/resume audio immediately from this user gesture
+                try{
+                    const bg = document.getElementById('bg-music');
+                    if (bg) bg.play().catch(()=>{});
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (AC) {
+                        window.__ac = window.__ac || new AC();
+                        window.__ac.resume().catch(()=>{});
+                    }
+                }catch(e){ }
+                document.dispatchEvent(new Event('user-start'));
+                console.log('Overlay clicked (inline fallback)');
+            });
+        })();
+    </script>
+
+    <!-- Start muted to allow mobile/autoplay policies to accept playback; will unmute on user gesture -->
+    <audio id="bg-music" loop preload="auto" muted crossorigin="anonymous">
+        <source src="Last Christmas.bgm.mp3" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+
+    <script>
+        // Attempt muted playback to satisfy mobile autoplay policies, then unmute on user gesture.
+        (function(){
+            const bg = document.getElementById('bg-music');
+            const vid = document.getElementById('video-source');
+            function tryMutedPlay(){
+                try{
+                    if (vid){ vid.muted = true; vid.playsInline = true; vid.play().catch(()=>{}); }
+                    if (bg){ bg.muted = true; bg.play().catch(()=>{}); }
+                }catch(e){}
+            }
+
+            // Try immediately and on first pointer/touch (some browsers allow gesture from touchstart)
+            tryMutedPlay();
+            window.addEventListener('pointerdown', tryMutedPlay, { once: true });
+            window.addEventListener('touchstart', tryMutedPlay, { once: true });
+
+            // On the explicit user-start (overlay click) try to resume audio and unmute
+            document.addEventListener('user-start', async ()=>{
+                try{
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (AC){ window.__ac = window.__ac || new AC(); await window.__ac.resume().catch(()=>{}); }
+                    if (bg){ bg.muted = false; await bg.play().catch(()=>{}); }
+                    if (vid){ vid.muted = false; await vid.play().catch(()=>{}); }
+                }catch(e){ console.warn('user-start playback resume failed', e); }
+            }, { once:true });
+
+            // Emit a 'video-ready' event when the video can be used as a texture
+            if (vid){
+                const fire = ()=> document.dispatchEvent(new Event('video-ready'));
+                vid.addEventListener('canplay', fire, { once:true });
+                vid.addEventListener('canplaythrough', fire, { once:true });
+                if (vid.readyState >= 3) fire();
+            }
+        })();
+    </script>
+
+    <video id="video-source" loop playsinline crossOrigin="anonymous" style="display:none">
+        <source src="bg_video.mp4" type="video/mp4">
+    </video>
+
+    <input type="file" id="user-audio-input" accept="audio/mpeg, audio/mp3, audio/ogg">
+
+    <video class="input_video"></video>
+
+    <div id="loading">Initializing Neural Net & Graphics...</div>
+
+    <div id="audio-controls" style="position:fixed; right:20px; bottom:20px; z-index:20; color:#fff; font-size:13px; display:flex; gap:8px; align-items:center;">
+        <button id="audio-toggle">Play</button>
+        <button id="audio-choose">Choose BGM...</button>
+        <span id="audio-status" style="opacity:0.85; font-size:12px; max-width:220px; display:inline-block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
+    </div>
+
+    <script>
+        // Visible controls + file-picker hookup + error messages
+        (function(){
+            const bg = document.getElementById('bg-music');
+            const toggle = document.getElementById('audio-toggle');
+            const choose = document.getElementById('audio-choose');
+            const input = document.getElementById('user-audio-input');
+            const status = document.getElementById('audio-status');
+            if (!bg || !toggle || !choose || !input || !status) return;
+
+            function updateStatus(){
+                const src = bg.currentSrc || bg.src || '';
+                const playState = bg.paused ? 'Paused' : 'Playing';
+                status.textContent = src ? `${playState} — ${src.split('/').pop()}` : 'No audio file selected';
+                toggle.textContent = bg.paused ? 'Play' : 'Pause';
+            }
+
+            toggle.addEventListener('click', async ()=>{
+                try{
+                    if (bg.paused) await bg.play(); else bg.pause();
+                }catch(e){
+                    console.warn('Playback blocked or failed', e);
+                    alert('Playback blocked. Click the page or choose a local file.');
+                }
+                updateStatus();
+            });
+
+            choose.addEventListener('click', ()=> input.click());
+
+            input.addEventListener('change', (e)=>{
+                const f = e.target.files && e.target.files[0];
+                if (!f) return;
+                const url = URL.createObjectURL(f);
+                bg.src = url;
+                bg.load();
+                bg.play().catch(()=>{});
+                updateStatus();
+            });
+
+            bg.addEventListener('error', ()=>{
+                status.textContent = 'Error loading bgm.mp3 — place bgm.mp3 in the project root or choose one.';
+                console.error('bgm load error', bg.error);
+            });
+
+            document.addEventListener('user-start', ()=>{
+                bg.play().catch(()=>{});
+                updateStatus();
+            }, { once:true });
+
+            // Initial status
+            updateStatus();
+        })();
+    </script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module" src="./main.js"></script>
+</body>
+</html>
