@@ -877,7 +877,18 @@ const mediaCamera = (function(){
             async function frameLoop() {
                 if (!running) return;
                 try {
-                    await hands.send({ image: inputVideo });
+                    // Guard: only send frames when the input video has valid dimensions
+                    const ready = inputVideo && typeof inputVideo.readyState !== 'undefined' && inputVideo.readyState >= 2;
+                    const hasSize = inputVideo && inputVideo.videoWidth && inputVideo.videoHeight;
+                    if (!ready || !hasSize || !hands) {
+                        // Avoid sending empty frames (ROI width/height must be > 0)
+                        // Show a gentle loading message until frames are available
+                        const loadingEl = document.getElementById('loading');
+                        if (loadingEl) { loadingEl.style.display = 'block'; loadingEl.textContent = 'Waiting for camera frames...'; }
+                    } else {
+                        // send only when video has valid pixel dimensions
+                        await hands.send({ image: inputVideo });
+                    }
                 } catch (err) {
                             console.error('Error sending frame to MediaPipe Hands:', err);
                             const loadingEl = document.getElementById('loading');
@@ -888,7 +899,7 @@ const mediaCamera = (function(){
 
                             // Detect common WASM / MediaPipe runtime crashes like out-of-bounds memory access
                             const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()).toLowerCase() : '';
-                            if (msg.includes('out of bounds') || msg.includes('outofbounds') || msg.includes('memoryaccess') || msg.includes('memory access')){
+                            if (msg.includes('out of bounds') || msg.includes('outofbounds') || msg.includes('memoryaccess') || msg.includes('memory access') || msg.includes('roi->width') || msg.includes('roi width') || msg.includes('roi->height')){
                                 // Attempt automated recovery: stop loop, reinitialize hands and restart camera up to a few times.
                                 console.warn('Detected WASM OOB memory error — attempting recovery');
                                 try {
