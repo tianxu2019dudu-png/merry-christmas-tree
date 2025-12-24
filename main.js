@@ -16,6 +16,13 @@ function loadScript(src) {
     });
 }
 
+function isMobileDevice(){
+    try{
+        const ua = navigator.userAgent || '';
+        return /Mobi|Android|iPhone|iPad|iPod|Mobile|IEMobile|WPDesktop/i.test(ua) || (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer:coarse)').matches);
+    }catch(e){ return false; }
+}
+
 async function initMediaPipeHands() {
     const loadingEl = document.getElementById('loading');
     if (loadingEl) {
@@ -66,16 +73,36 @@ async function initMediaPipeHands() {
     // locateFile should point to the same base where the hands assets (WASM, tflite, data) live.
     const locateFileBase = (typeof chosenBase === 'string' && chosenBase.length) ? chosenBase : 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/';
     hands = new window.Hands({locateFile: (file) => `${locateFileBase}${file}`});
+    // Use a lighter model on mobile to reduce CPU and warm up the graph early.
+    const mobile = isMobileDevice();
+    const modelComplexity = mobile ? 0 : 1;
     hands.setOptions({
         maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+        modelComplexity: modelComplexity,
+        minDetectionConfidence: mobile ? 0.45 : 0.5,
+        minTrackingConfidence: mobile ? 0.4 : 0.5
     });
     hands.onResults(onHandsResults);
     if (loadingEl) loadingEl.textContent = 'Hand model loaded.';
     return hands;
 }
+
+// Warm up MediaPipe early on page load so gestures switch faster later.
+// This does not request the camera — only loads assets and constructs the graph.
+try{
+    if (document.readyState === 'complete' || document.readyState === 'interactive'){
+        // Defer but start warming immediately
+        setTimeout(()=>{
+            initMediaPipeHands().then(()=>console.log('MediaPipe Hands warmed')).catch(err=>console.warn('Warm-up failed', err));
+        }, 200);
+    } else {
+        window.addEventListener('DOMContentLoaded', ()=>{
+            setTimeout(()=>{
+                initMediaPipeHands().then(()=>console.log('MediaPipe Hands warmed on DOMContentLoaded')).catch(err=>console.warn('Warm-up failed', err));
+            }, 200);
+        });
+    }
+}catch(e){ /* ignore warm-up errors */ }
 // Note: the CDN camera_utils may not export an ES module `Camera` in all environments.
 // We'll use a lightweight local wrapper that uses `getUserMedia` and feeds frames
 // into the MediaPipe `hands.send()` loop. This avoids import errors in browsers
@@ -1128,6 +1155,21 @@ function onHandsResults(results) {
  */
 const clock = new THREE.Clock();
 let _prevMode = STATE.mode; // track mode changes to trigger side effects (like video play)
+let __switchingTimer = null;
+
+function showSwitchingIndicator(){
+    try{
+        const el = document.getElementById('switching-indicator');
+        if (!el) return;
+        el.style.display = 'flex';
+        // auto-hide after a short timeout if not hidden elsewhere
+        if (__switchingTimer) clearTimeout(__switchingTimer);
+        __switchingTimer = setTimeout(()=>{ try{ el.style.display = 'none'; }catch(e){} }, 1200);
+    }catch(e){}
+}
+function hideSwitchingIndicator(){
+    try{ const el = document.getElementById('switching-indicator'); if (el) el.style.display = 'none'; if (__switchingTimer) { clearTimeout(__switchingTimer); __switchingTimer = null; } }catch(e){}
+}
 let __posterHidden = false; // track whether we've hidden the poster already
 
 function animate() {
@@ -1179,6 +1221,8 @@ function animate() {
 
     // If mode changed, run any start/stop actions (try to auto-play video on SCATTER)
     if (STATE.mode !== _prevMode) {
+        // Inform user of transition on mobile where CPU-bound switches may take time
+        showSwitchingIndicator();
         // entering SCATTER: try to autoplay the video (muted) for visual playback
         if (STATE.mode === 'SCATTER' && videoEl) {
             try {
@@ -1220,6 +1264,8 @@ function animate() {
             try { videoEl.pause(); STATE.isPlayingVideo = false; } catch (e) { /* ignore */ }
         }
 
+        // Hide the switching indicator shortly after the mode change has been applied
+        setTimeout(()=>{ hideSwitchingIndicator(); }, 800);
         _prevMode = STATE.mode;
     }
 

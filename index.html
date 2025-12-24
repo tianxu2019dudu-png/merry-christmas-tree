@@ -103,6 +103,26 @@
             font-size: 12px;
             z-index: 5;
         }
+
+        /* Small transient switching indicator shown during gesture transitions */
+        #switching-indicator {
+            position: fixed;
+            left: 50%;
+            top: 12%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            z-index: 30;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+        }
+        #switching-indicator .dot { width:10px; height:10px; border-radius:50%; background:#ff6fae; animation: pulse 900ms infinite ease-in-out; }
+        @keyframes pulse { 0% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.4); opacity: 0.6 } 100% { transform: scale(1); opacity: 1 } }
         
         /* Mirror the video element for debugging if needed, but we hide it */
         .input_video {
@@ -363,6 +383,8 @@
     <video class="input_video"></video>
 
     <div id="loading">Initializing Neural Net & Graphics...</div>
+
+    <div id="switching-indicator" aria-hidden="true"><div class="dot"></div><div>Switching ...</div></div>
 
     <div id="audio-controls" style="position:fixed; right:20px; bottom:20px; z-index:20; color:#fff; font-size:13px; display:flex; gap:8px; align-items:center;">
         <button id="audio-toggle">Play</button>
