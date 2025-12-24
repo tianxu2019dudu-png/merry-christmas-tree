@@ -113,12 +113,13 @@ function hideVideoLoading() {
     _videoBuffering = false;
 }
 
-// Ready Manager: ensure UI only reveals when BOTH the background video
-// is playable (readyState >= 3 / canplaythrough) AND MediaPipe has
-// produced its first onResults callback (i.e. hand tracking is functional).
+// Ready Manager: ensure UI only reveals when Video, Hands and Audio
+// are fully ready. It updates the indicator UI and finalizes when
+// all three subsystems report readiness.
 const ReadyManager = (function(){
     let videoReady = false;
     let handsReady = false;
+    let audioReady = false;
     let finished = false;
 
     function updateUI(){
@@ -127,10 +128,14 @@ const ReadyManager = (function(){
             const vText = document.getElementById('ready-video-text');
             const hIcon = document.getElementById('ready-hands-icon');
             const hText = document.getElementById('ready-hands-text');
+            const aIcon = document.getElementById('ready-audio-icon');
+            const aText = document.getElementById('ready-audio-text');
             if (vIcon) vIcon.style.background = videoReady ? '#4caf50' : '#7a7a7a';
             if (vText) vText.textContent = videoReady ? 'Ready' : 'Waiting';
             if (hIcon) hIcon.style.background = handsReady ? '#4caf50' : '#7a7a7a';
             if (hText) hText.textContent = handsReady ? 'Ready' : 'Waiting';
+            if (aIcon) aIcon.style.background = audioReady ? '#4caf50' : '#7a7a7a';
+            if (aText) aText.textContent = audioReady ? 'Ready' : 'Waiting';
         }catch(e){ /* ignore UI errors */ }
     }
 
@@ -146,19 +151,21 @@ const ReadyManager = (function(){
             }
         }catch(e){ console.warn('ReadyManager finalizing failed', e); }
         document.dispatchEvent(new Event('app-ready'));
+        document.dispatchEvent(new Event('all-ready'));
     }
 
     function check() {
         updateUI();
-        if (videoReady && handsReady) finalize();
+        if (videoReady && handsReady && audioReady) finalize();
     }
 
     return {
         setVideoReady(){ videoReady = true; check(); },
         setHandsReady(){ handsReady = true; check(); },
+        setAudioReady(){ audioReady = true; check(); },
         isReady(){ return finished; },
         // expose for diagnostics
-        _state(){ return { videoReady, handsReady, finished }; }
+        _state(){ return { videoReady, handsReady, audioReady, finished }; }
     };
 })();
 
@@ -273,6 +280,16 @@ if (audioEl) {
     } catch (e) {
         console.warn('Could not set audio source programmatically:', e);
     }
+
+    // Attach readiness listeners to ensure audio is preloaded and reported
+    try{
+        const onAudioReady = ()=> { try{ ReadyManager.setAudioReady(); }catch(e){} };
+        audioEl.addEventListener('canplaythrough', onAudioReady, { once:true });
+        audioEl.addEventListener('canplay', onAudioReady, { once:true });
+        audioEl.addEventListener('loadeddata', onAudioReady, { once:true });
+        try{ audioEl.preload = audioEl.preload || 'auto'; audioEl.load(); }catch(e){}
+        if (audioEl.readyState >= 3) onAudioReady();
+    }catch(e){ console.warn('Error attaching audio readiness listeners', e); }
 }
 
 window.addEventListener('load', async () => {
