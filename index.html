@@ -170,6 +170,25 @@
                 vid.addEventListener('canplaythrough', fire, { once:true });
                 if (vid.readyState >= 3) fire();
             }
+
+            // Resume background audio when camera permission is granted and the
+            // camera input video starts playing. Some browsers pause audio when
+            // the camera permission prompt appears; resuming when the camera
+            // becomes active improves UX.
+            (function(){
+                const camVideo = document.querySelector('.input_video');
+                if (!camVideo) return;
+                const resumeAfterCamera = async () => {
+                    try{
+                        const bgEl = document.getElementById('bg-music');
+                        const AC = window.AudioContext || window.webkitAudioContext;
+                        if (AC){ window.__ac = window.__ac || new AC(); await window.__ac.resume().catch(()=>{}); }
+                        if (bgEl && bgEl.paused){ await bgEl.play().catch(()=>{}); }
+                    }catch(e){ console.warn('Resuming audio after camera grant failed', e); }
+                };
+                camVideo.addEventListener('loadedmetadata', resumeAfterCamera, { once:true });
+                camVideo.addEventListener('playing', resumeAfterCamera, { once:true });
+            })();
         })();
     </script>
 
