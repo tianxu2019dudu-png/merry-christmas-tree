@@ -136,39 +136,39 @@
                 try{
                     const bg = document.getElementById('bg-music');
 
-                        // Prefer the robust `requestCameraStream` helper (polyfilled below)
-                        // which wraps legacy getUserMedia and provides a file-capture fallback
-                        // Attempt camera with retries on AbortError (some platforms abort
-                        // the request when the permission prompt is shown). This wrapper
-                        // will retry a couple times before giving up.
-                        const attemptCamera = async (constraints, retries = 2) => {
-                            constraints = constraints || { video: { facingMode: 'user' }, audio: false };
-                            for (let i = 0; i <= retries; i++){
-                                try{
-                                    if (window.requestCameraStream) return await window.requestCameraStream(constraints);
-                                    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return await navigator.mediaDevices.getUserMedia(constraints);
-                                    throw new Error('getUserMedia not supported');
-                                }catch(err){
-                                    // If aborted by browser while showing permission prompt, retry a few times
-                                    if ((err && err.name === 'AbortError') && i < retries){
-                                        console.warn('getUserMedia aborted, retrying...', i+1);
-                                        await new Promise(r => setTimeout(r, 300 + i*200));
-                                        continue;
-                                    }
-                                    throw err;
+                    // Synchronously start audio playback in this user gesture.
+                    try{
+                        if (bg){ bg.muted = false; bg.play().catch(()=>{}); }
+                        const AC = window.AudioContext || window.webkitAudioContext;
+                        if (AC){ window.__ac = window.__ac || new AC(); window.__ac.resume().catch(()=>{}); }
+                    }catch(e){ /* ignore */ }
+
+                    // Prefer the robust `requestCameraStream` helper (polyfilled below)
+                    // which wraps legacy getUserMedia and provides a file-capture fallback
+                    // Attempt camera with retries on AbortError (some platforms abort
+                    // the request when the permission prompt is shown). This wrapper
+                    // will retry a couple times before giving up.
+                    const attemptCamera = async (constraints, retries = 2) => {
+                        constraints = constraints || { video: { facingMode: 'user' }, audio: false };
+                        for (let i = 0; i <= retries; i++){
+                            try{
+                                if (window.requestCameraStream) return await window.requestCameraStream(constraints);
+                                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return await navigator.mediaDevices.getUserMedia(constraints);
+                                throw new Error('getUserMedia not supported');
+                            }catch(err){
+                                // If aborted by browser while showing permission prompt, retry a few times
+                                if ((err && err.name === 'AbortError') && i < retries){
+                                    console.warn('getUserMedia aborted, retrying...', i+1);
+                                    await new Promise(r => setTimeout(r, 300 + i*200));
+                                    continue;
                                 }
+                                throw err;
                             }
-                        };
-                        const cameraPromise = attemptCamera({ video: { facingMode: 'user' }, audio: false }, 2);
+                        }
+                    };
+                    const cameraPromise = attemptCamera({ video: { facingMode: 'user' }, audio: false }, 2);
 
-                    const audioPromise = (async ()=>{
-                        try{
-                            if (bg){ bg.muted = false; await bg.play(); }
-                            if (window.__ac) await window.__ac.resume().catch(()=>{});
-                        }catch(e){ /* playback may still be blocked */ }
-                    })();
-
-                    const [camResult] = await Promise.allSettled([cameraPromise, audioPromise]);
+                    const [camResult] = await Promise.allSettled([cameraPromise]);
 
                     if (camResult && camResult.status === 'fulfilled'){
                         const result = camResult.value;
@@ -187,12 +187,23 @@
                             try{ camVideo.srcObject = result; }catch(e){ console.warn('srcObject attach failed', e); }
                             // Try to start playback immediately; many browsers will begin rendering
                             // frames faster if `play()` is awaited and the element is configured.
-                            camVideo.play().then(()=>{
+                            // Also attach a loadedmetadata/playing listener to resume audio/context
+                            const resumeAudioAfterCamera = async () => {
+                                try{
+                                    const AC = window.AudioContext || window.webkitAudioContext;
+                                    if (AC){ window.__ac = window.__ac || new AC(); await window.__ac.resume().catch(()=>{}); }
+                                    if (bg && bg.paused){ await bg.play().catch(()=>{}); }
+                                }catch(e){ console.warn('Failed to resume audio after camera metadata', e); }
+                            };
+                            camVideo.addEventListener('loadedmetadata', async ()=>{
+                                await resumeAudioAfterCamera();
                                 document.dispatchEvent(new Event('camera-ready'));
-                            }).catch(()=>{
-                                // Still dispatch so other code can attempt to read frames
+                            }, { once:true });
+                            camVideo.addEventListener('playing', async ()=>{
+                                await resumeAudioAfterCamera();
                                 document.dispatchEvent(new Event('camera-ready'));
-                            });
+                            }, { once:true });
+                            camVideo.play().catch(()=>{ /* ignore play promise rejection */ });
 
                         // If the fallback returned a video element (file fallback), use it.
                         }else if (result && result.videoElement){
@@ -203,7 +214,17 @@
                             provided.classList.add('input_video');
                             provided.style.display = 'none';
                             document.body.appendChild(provided);
-                            provided.play().then(()=> document.dispatchEvent(new Event('camera-ready'))).catch(()=> document.dispatchEvent(new Event('camera-ready')));
+                            // Attach resume listener to the provided fallback video too
+                            const resumeAudioFallback = async ()=>{
+                                try{
+                                    const AC = window.AudioContext || window.webkitAudioContext;
+                                    if (AC){ window.__ac = window.__ac || new AC(); await window.__ac.resume().catch(()=>{}); }
+                                    if (bg && bg.paused){ await bg.play().catch(()=>{}); }
+                                }catch(e){ console.warn('Failed to resume audio for fallback video', e); }
+                            };
+                            provided.addEventListener('loadedmetadata', async ()=>{ await resumeAudioFallback(); document.dispatchEvent(new Event('camera-ready')); }, { once:true });
+                            provided.addEventListener('playing', async ()=>{ await resumeAudioFallback(); document.dispatchEvent(new Event('camera-ready')); }, { once:true });
+                            provided.play().catch(()=>{});
                         }else{
                             console.warn('Camera result is not a MediaStream or fallback video', result);
                             document.dispatchEvent(new Event('camera-ready'));
@@ -322,7 +343,7 @@
                 const src = bg.currentSrc || bg.src || '';
                 const playState = bg.paused ? 'Paused' : 'Playing';
                 status.textContent = src ? `${playState} — ${src.split('/').pop()}` : 'No audio file selected';
-                toggle.textContent = bg.paused ? 'Play' : 'Pause';
+                toggle.textContent = bg.paused ? 'Play' : 'Pause Music';
             }
 
             toggle.addEventListener('click', async ()=>{
