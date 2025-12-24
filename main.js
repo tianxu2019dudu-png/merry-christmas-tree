@@ -112,6 +112,72 @@ function hideVideoLoading() {
     if (loadingEl) loadingEl.style.display = 'none';
     _videoBuffering = false;
 }
+
+// Ready Manager: ensure UI only reveals when BOTH the background video
+// is playable (readyState >= 3 / canplaythrough) AND MediaPipe has
+// produced its first onResults callback (i.e. hand tracking is functional).
+const ReadyManager = (function(){
+    let videoReady = false;
+    let handsReady = false;
+    let finished = false;
+
+    function updateUI(){
+        try{
+            const vIcon = document.getElementById('ready-video-icon');
+            const vText = document.getElementById('ready-video-text');
+            const hIcon = document.getElementById('ready-hands-icon');
+            const hText = document.getElementById('ready-hands-text');
+            if (vIcon) vIcon.style.background = videoReady ? '#4caf50' : '#7a7a7a';
+            if (vText) vText.textContent = videoReady ? 'Ready' : 'Waiting';
+            if (hIcon) hIcon.style.background = handsReady ? '#4caf50' : '#7a7a7a';
+            if (hText) hText.textContent = handsReady ? 'Ready' : 'Waiting';
+        }catch(e){ /* ignore UI errors */ }
+    }
+
+    function finalize(){
+        if (finished) return;
+        finished = true;
+        try{
+            const loadingEl = document.getElementById('loading'); if (loadingEl) loadingEl.style.display = 'none';
+            const overlayEl = document.getElementById('overlay');
+            if (overlayEl) {
+                overlayEl.style.opacity = '0';
+                setTimeout(()=>{ overlayEl.style.display = 'none'; }, 500);
+            }
+        }catch(e){ console.warn('ReadyManager finalizing failed', e); }
+        document.dispatchEvent(new Event('app-ready'));
+    }
+
+    function check() {
+        updateUI();
+        if (videoReady && handsReady) finalize();
+    }
+
+    return {
+        setVideoReady(){ videoReady = true; check(); },
+        setHandsReady(){ handsReady = true; check(); },
+        isReady(){ return finished; },
+        // expose for diagnostics
+        _state(){ return { videoReady, handsReady, finished }; }
+    };
+})();
+
+// If the video was already in a playable state before Main loaded, mark it ready.
+try{ if (videoEl && videoEl.readyState >= 3) ReadyManager.setVideoReady(); }catch(e){}
+// Also listen for any cross-script `video-ready` events emitted by the inline helper.
+document.addEventListener('video-ready', ()=>{ try{ ReadyManager.setVideoReady(); }catch(e){} });
+
+// Initialize readiness UI to a default state in case elements exist early
+try{
+    const vIcon = document.getElementById('ready-video-icon');
+    const vText = document.getElementById('ready-video-text');
+    const hIcon = document.getElementById('ready-hands-icon');
+    const hText = document.getElementById('ready-hands-text');
+    if (vIcon) vIcon.style.background = '#7a7a7a';
+    if (vText) vText.textContent = 'Waiting';
+    if (hIcon) hIcon.style.background = '#7a7a7a';
+    if (hText) hText.textContent = 'Waiting';
+}catch(e){}
 // DIAGNOSTICS: ensure the video element exists and report source/load errors
 if (!videoEl) {
     console.error('Video element `#video-source` not found in DOM');
@@ -143,27 +209,57 @@ if (!videoEl) {
             }
         });
 
-        // Buffering/stall detection and user feedback
-        videoEl.addEventListener('waiting', () => {
-            console.warn('Video waiting (buffering) event');
-            showVideoLoading('Video buffering...');
-        });
-        videoEl.addEventListener('stalled', () => {
-            console.warn('Video stalled');
-            showVideoLoading('Video stalled — trying to recover...');
-        });
-        videoEl.addEventListener('playing', () => {
-            hideVideoLoading();
-            STATE.isPlayingVideo = true;
-        });
-        videoEl.addEventListener('pause', () => {
-            STATE.isPlayingVideo = false;
-        });
-        // update last time when timeupdate fires (fallback)
-        videoEl.addEventListener('timeupdate', () => {
-            _lastVideoTime = videoEl.currentTime || 0;
-            _lastVideoTimeUpdate = performance.now();
-        });
+        // Buffering/stall detection and user feedback with retry logic
+        try {
+            // Ensure the browser is encouraged to preload
+            try { videoEl.preload = videoEl.preload || 'auto'; } catch(e){}
+
+            let _retryTimeout = null;
+            const attemptResume = async () => {
+                try {
+                    if (videoEl.paused) await videoEl.play().catch(()=>{});
+                } catch (e) { /* ignore play errors */ }
+            };
+
+            videoEl.addEventListener('waiting', () => {
+                console.warn('Video waiting (buffering) event');
+                showVideoLoading('Video buffering...');
+                clearTimeout(_retryTimeout);
+                // Attempt to resume after a short delay (gives decoder/network time)
+                _retryTimeout = setTimeout(() => attemptResume(), 400);
+            });
+
+            videoEl.addEventListener('stalled', () => {
+                console.warn('Video stalled');
+                showVideoLoading('Video stalled — trying to recover...');
+                clearTimeout(_retryTimeout);
+                _retryTimeout = setTimeout(() => attemptResume(), 600);
+            });
+
+                videoEl.addEventListener('canplaythrough', () => {
+                    // Full buffer available for uninterrupted playback
+                    hideVideoLoading();
+                    clearTimeout(_retryTimeout);
+                    try{ ReadyManager.setVideoReady(); }catch(e){}
+                });
+
+            videoEl.addEventListener('playing', () => {
+                hideVideoLoading();
+                STATE.isPlayingVideo = true;
+                try{ if (videoEl.readyState >= 3) ReadyManager.setVideoReady(); }catch(e){}
+            });
+            videoEl.addEventListener('pause', () => {
+                STATE.isPlayingVideo = false;
+            });
+
+            // update last time when timeupdate fires (fallback)
+            videoEl.addEventListener('timeupdate', () => {
+                _lastVideoTime = videoEl.currentTime || 0;
+                _lastVideoTimeUpdate = performance.now();
+            });
+        } catch (e) {
+            console.warn('Error while attaching enhanced video listeners:', e);
+        }
     } catch (e) {
         console.warn('Error while inspecting video element:', e);
     }
@@ -200,10 +296,33 @@ scene.fog = new THREE.FogExp2(0x050505, 0.05);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(0, 0, 10);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+// Create a canvas and obtain a WebGL context preferring WebGL1 for portability.
+const _canvas = document.createElement('canvas');
+const _gl = window.getWebGLContext(_canvas, { antialias: true, alpha: true });
+if (!_gl) {
+    // Fallback to default renderer creation which will try its own contexts.
+    console.warn('Could not obtain preferred WebGL context; falling back to default WebGLRenderer.');
+}
+const renderer = _gl ? new THREE.WebGLRenderer({ canvas: _canvas, context: _gl, antialias: true, alpha: true }) : new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+// Clamp device pixel ratio to avoid forcing heavy GPU features on low-end mobile
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 container.appendChild(renderer.domElement);
+
+// Block known non-portable extension requests on our renderer context (best-effort)
+try{
+    const _glctx = renderer.getContext();
+    if (_glctx){
+        const origGetExt = _glctx.getExtension.bind(_glctx);
+        _glctx.getExtension = function(name){
+            if (!name) return null;
+            const n = String(name).toLowerCase();
+            // Deny non-portable polygon mode extension
+            if (n.includes('polygon_mode')) return null;
+            try{ return origGetExt(name); }catch(e){ return null; }
+        };
+    }
+}catch(e){ console.warn('Could not patch WebGL getExtension:', e); }
 
 // Post-Processing (Bloom)
 const renderScene = new RenderPass(scene, camera);
@@ -496,11 +615,9 @@ async function handleOverlayClick() {
     if (started) return;
     started = true;
 
-    // 淡出 overlay
-    overlay.style.opacity = '0';
-    setTimeout(() => {
-        overlay.style.display = 'none';
-    }, 500);
+    // Keep the overlay visible until ReadyManager confirms both video
+    // and hand-tracking are ready. Provide subtle visual feedback only.
+    try{ overlay.style.opacity = '0.96'; }catch(e){}
 
     // 解锁音频
     audioCtxAllowed = true;
@@ -602,9 +719,55 @@ const mediaCamera = (function(){
                 loadingEl.style.display = 'block';
                 loadingEl.textContent = 'Requesting camera permission...';
             }
-            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+            // Prefer unified helper (works with embedded webviews/file fallback)
+            const constraints = { video: { width: 640, height: 480 }, audio: false };
+            const attemptGetStream = async (attempts = 3) => {
+                for (let i = 0; i < attempts; i++){
+                    try{
+                        if (window.requestCameraStream) return await window.requestCameraStream(constraints);
+                        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return await navigator.mediaDevices.getUserMedia(constraints);
+                        throw new Error('getUserMedia not supported');
+                    }catch(err){
+                        // Retry on AbortError (permission prompt aborted by platform); small backoff
+                        if (err && err.name === 'AbortError' && i < attempts - 1){
+                            await new Promise(r => setTimeout(r, 300 + i * 250));
+                            continue;
+                        }
+                        throw err;
+                    }
+                }
+            };
+
+            // Attempt to obtain a stream with retries
+            stream = await attemptGetStream(3);
+
+            // Attach stream and try to start playback; wait for 'playing' or 'loadeddata' with a small timeout
             inputVideo.srcObject = stream;
-            await inputVideo.play();
+            try{ inputVideo.muted = true; inputVideo.playsInline = true; }catch(e){}
+
+            const waitForVideoPlayable = (timeout = 1200) => new Promise((resolve, reject) => {
+                let settled = false;
+                const cleanup = () => {
+                    inputVideo.removeEventListener('playing', onPlay);
+                    inputVideo.removeEventListener('loadeddata', onPlay);
+                    inputVideo.removeEventListener('error', onError);
+                    clearTimeout(t);
+                };
+                const onPlay = () => { if (settled) return; settled = true; cleanup(); resolve(); };
+                const onError = (e) => { if (settled) return; settled = true; cleanup(); reject(e || new Error('video error')); };
+                inputVideo.addEventListener('playing', onPlay, { once: true });
+                inputVideo.addEventListener('loadeddata', onPlay, { once: true });
+                inputVideo.addEventListener('error', onError, { once: true });
+                // Try to start playing; ignore play promise rejections here
+                const p = inputVideo.play(); if (p && p.catch) p.catch(()=>{});
+                const t = setTimeout(() => {
+                    if (settled) return; settled = true; cleanup(); // timeout: resolve so processing can continue and errors handled downstream
+                    resolve();
+                }, timeout);
+            });
+
+            await waitForVideoPlayable(1200);
+
             running = true;
             if (loadingEl) loadingEl.textContent = 'Camera started — waiting for frames...';
 
@@ -671,7 +834,8 @@ window.addEventListener('unhandledrejection', (ev) => {
 
 function onHandsResults(results) {
     STATE.handDetected = false;
-    document.getElementById('loading').style.display = 'none'; // Hide loading once we get data
+    // Mark hands ready on first results and let ReadyManager decide when to remove the overlay
+    try{ ReadyManager.setHandsReady(); }catch(e){}
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         STATE.handDetected = true;

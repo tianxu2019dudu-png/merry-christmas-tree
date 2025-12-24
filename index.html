@@ -110,6 +110,16 @@
             [ 点击任意位置开始 ]
         </p>
         <p class="start-notes">摄像头可能需要缓冲一段时间才能使用手势<br>粒子散开后视频可能需要一段时间才能加载出来</p>
+        <div id="ready-indicator" style="margin-top:18px; text-align:left; color:#fff; max-width:420px;">
+            <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+                <div id="ready-video-icon" style="width:14px;height:14px;border-radius:50%;background:#7a7a7a;box-shadow:0 0 6px rgba(0,0,0,0.6)"></div>
+                <div style="font-size:13px;">Video: <span id="ready-video-text">Waiting</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+                <div id="ready-hands-icon" style="width:14px;height:14px;border-radius:50%;background:#7a7a7a;box-shadow:0 0 6px rgba(0,0,0,0.6)"></div>
+                <div style="font-size:13px;">Hands: <span id="ready-hands-text">Waiting</span></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -120,9 +130,10 @@
             const overlayEl = document.getElementById('overlay');
             if (!overlayEl) return;
             overlayEl.addEventListener('click', async () => {
-                // quick visual feedback
-                overlayEl.style.opacity = '0';
-                setTimeout(() => { overlayEl.style.display = 'none'; }, 500);
+                // Don't hide the overlay immediately — defer removal until
+                // the Ready Manager confirms both the video and hand model are ready.
+                // Provide quick visual feedback (subtle) while we initialize.
+                overlayEl.style.opacity = '0.92';
                 window.__userClickedStart = true;
 
                 // Create/resume AudioContext synchronously from the user gesture
@@ -313,8 +324,13 @@
         })();
     </script>
 
-    <video id="video-source" loop playsinline crossOrigin="anonymous" style="display:none">
+    <video id="video-source" loop playsinline muted preload="auto" crossOrigin="anonymous" style="display:none">
+        <!-- preload="auto" helps the browser fetch data early; muted allows muted autoplay in some browsers
+             Keep local `bg_video.mp4` if present; replace or choose file via controls if missing. -->
         <source src="bg_video.mp4" type="video/mp4">
+        <!-- Optional fallback remote source (uncomment and provide a reachable URL if needed):
+        <source src="https://example.com/path/to/bg_video.mp4" type="video/mp4">
+        -->
     </video>
 
     <input type="file" id="user-audio-input" accept="audio/mpeg, audio/mp3, audio/ogg">
@@ -396,9 +412,11 @@
         // Compatibility helper for legacy mobile webviews and older browsers.
         (function(){
             // WebGL context helper: try webgl2, webgl, experimental-webgl
+            // Prefer WebGL1 for maximum compatibility across older/mobile browsers.
             window.getWebGLContext = function(canvas, opts){
                 if (!canvas) return null;
-                const names = ['webgl2','webgl','experimental-webgl'];
+                // Try WebGL1 before WebGL2 so we avoid non-portable WebGL2-only extensions
+                const names = ['webgl','webgl2','experimental-webgl'];
                 for (let i=0;i<names.length;i++){
                     try{
                         const ctx = canvas.getContext(names[i], opts);
