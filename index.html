@@ -109,7 +109,7 @@
             [ Click anywhere to Begin ]<br>
             [ 点击任意位置开始 ]
         </p>
-        <p class="start-notes">摄像头可能需要缓冲一段时间才能使用手势<br>粒子散开后视频可能需要一段时间才能加载出来</p>
+        <p class="start-notes">等待绿灯亮起，魔法就绪</p>
         <div id="ready-indicator" style="margin-top:18px; text-align:left; color:#fff; max-width:420px;">
             <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
                 <div id="ready-video-icon" style="width:14px;height:14px;border-radius:50%;background:#7a7a7a;box-shadow:0 0 6px rgba(0,0,0,0.6)"></div>
@@ -359,7 +359,7 @@
                 const src = bg.currentSrc || bg.src || '';
                 const playState = bg.paused ? 'Paused' : 'Playing';
                 status.textContent = src ? `${playState} — ${src.split('/').pop()}` : 'No audio file selected';
-                toggle.textContent = bg.paused ? 'Play' : 'Pause Music';
+                toggle.textContent = bg.paused ? 'Play' : 'Music Control';
             }
 
             toggle.addEventListener('click', async ()=>{

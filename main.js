@@ -776,12 +776,57 @@ const mediaCamera = (function(){
                 try {
                     await hands.send({ image: inputVideo });
                 } catch (err) {
-                    console.error('Error sending frame to MediaPipe Hands:', err);
-                    const loadingEl = document.getElementById('loading');
-                    if (loadingEl) {
-                        loadingEl.style.display = 'block';
-                        loadingEl.textContent = 'Error during frame processing: ' + (err && err.message ? err.message : String(err));
-                    }
+                            console.error('Error sending frame to MediaPipe Hands:', err);
+                            const loadingEl = document.getElementById('loading');
+                            if (loadingEl) {
+                                loadingEl.style.display = 'block';
+                                loadingEl.textContent = 'Error during frame processing: ' + (err && err.message ? err.message : String(err));
+                            }
+
+                            // Detect common WASM / MediaPipe runtime crashes like out-of-bounds memory access
+                            const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()).toLowerCase() : '';
+                            if (msg.includes('out of bounds') || msg.includes('outofbounds') || msg.includes('memoryaccess') || msg.includes('memory access')){
+                                // Attempt automated recovery: stop loop, reinitialize hands and restart camera up to a few times.
+                                console.warn('Detected WASM OOB memory error — attempting recovery');
+                                try {
+                                    // stop the camera loop and tracks
+                                    running = false;
+                                    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+                                    if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
+
+                                    // Try to gracefully close existing hands instance if possible
+                                    try{ if (hands && typeof hands.close === 'function') await hands.close(); }catch(e){ console.warn('hands.close() failed', e); }
+                                    hands = null;
+
+                                    // Recovery attempts
+                                    let recovered = false;
+                                    for (let attempt = 1; attempt <= 3 && !recovered; attempt++){
+                                        try{
+                                            if (loadingEl) loadingEl.textContent = `Recovering hand model (attempt ${attempt})...`;
+                                            // Re-init hands
+                                            await initMediaPipeHands();
+                                            // Small backoff before starting camera again
+                                            await new Promise(r => setTimeout(r, 500 * attempt));
+                                            // Try to restart camera and resume frameLoop
+                                            await start();
+                                            recovered = true;
+                                            if (loadingEl) loadingEl.textContent = 'Recovered — continuing';
+                                        }catch(re){
+                                            console.warn('Recovery attempt failed', attempt, re);
+                                            await new Promise(r => setTimeout(r, 300 * attempt));
+                                        }
+                                    }
+
+                                    if (!recovered){
+                                        if (loadingEl) loadingEl.textContent = 'Fatal: hand model recovery failed. Reload page.';
+                                        console.error('Failed to recover MediaPipe Hands after multiple attempts');
+                                    } else {
+                                        console.log('Recovery successful — resuming frame loop');
+                                    }
+                                } catch (recoveryErr){
+                                    console.error('Unexpected error during recovery from WASM OOB:', recoveryErr);
+                                }
+                            }
                 }
                 rafId = requestAnimationFrame(frameLoop);
             }
