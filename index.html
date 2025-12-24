@@ -109,23 +109,52 @@
         (function(){
             const overlayEl = document.getElementById('overlay');
             if (!overlayEl) return;
-            overlayEl.addEventListener('click', () => {
+            overlayEl.addEventListener('click', async () => {
                 // quick visual feedback
                 overlayEl.style.opacity = '0';
                 setTimeout(() => { overlayEl.style.display = 'none'; }, 500);
                 window.__userClickedStart = true;
-                // Attempt to start/resume audio immediately from this user gesture
+
+                // Create/resume AudioContext synchronously from the user gesture
+                try{
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (AC) window.__ac = window.__ac || new AC();
+                }catch(e){ /* ignore */ }
+
+                // Bundle audio playback and camera request in the same click handler
+                // so mobile browsers treat both as coming from the same user gesture.
                 try{
                     const bg = document.getElementById('bg-music');
-                    if (bg) bg.play().catch(()=>{});
-                    const AC = window.AudioContext || window.webkitAudioContext;
-                    if (AC) {
-                        window.__ac = window.__ac || new AC();
-                        window.__ac.resume().catch(()=>{});
+
+                    const cameraPromise = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+                        ? navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+                        : Promise.reject(new Error('getUserMedia not supported'));
+
+                    const audioPromise = (async ()=>{
+                        try{
+                            if (bg){ bg.muted = false; await bg.play(); }
+                            if (window.__ac) await window.__ac.resume().catch(()=>{});
+                        }catch(e){ /* playback may still be blocked */ }
+                    })();
+
+                    const [camResult] = await Promise.allSettled([cameraPromise, audioPromise]);
+
+                    if (camResult && camResult.status === 'fulfilled'){
+                        const stream = camResult.value;
+                        const camVideo = document.querySelector('.input_video');
+                        if (camVideo){
+                            camVideo.srcObject = stream;
+                            camVideo.playsInline = true;
+                            camVideo.muted = true;
+                            camVideo.play().catch(()=>{});
+                        }
+                    } else {
+                        console.warn('Camera request failed or was denied', camResult && camResult.reason);
                     }
-                }catch(e){ }
+                }catch(e){ console.warn('Start handler error', e); }
+
                 document.dispatchEvent(new Event('user-start'));
-                console.log('Overlay clicked (inline fallback)');
+                console.log('Overlay clicked (start handler)');
             });
         })();
     </script>
