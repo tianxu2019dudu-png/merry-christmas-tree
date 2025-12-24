@@ -53,6 +53,15 @@
             line-height: 1.6;
         }
 
+        #overlay .start-notes {
+            font-size: 12px;
+            color: rgba(255,255,255,0.85);
+            opacity: 0.95;
+            margin-top: 10px;
+            max-width: 600px;
+            line-height: 1.4;
+        }
+
         .hidden {
             display: none !important;
             opacity: 0;
@@ -100,6 +109,7 @@
             [ Click anywhere to Begin ]<br>
             [ 点击任意位置开始 ]
         </p>
+        <p class="start-notes">摄像头可能需要缓冲一段时间才能使用手势<br>粒子散开后视频可能需要一段时间才能加载出来</p>
     </div>
 
     <script>
@@ -126,9 +136,13 @@
                 try{
                     const bg = document.getElementById('bg-music');
 
-                    const cameraPromise = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-                        ? navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
-                        : Promise.reject(new Error('getUserMedia not supported'));
+                        // Prefer the robust `requestCameraStream` helper (polyfilled below)
+                        // which wraps legacy getUserMedia and provides a file-capture fallback
+                        const cameraPromise = (window.requestCameraStream)
+                            ? window.requestCameraStream({ video: { facingMode: 'user' }, audio: false })
+                            : ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+                                ? navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+                                : Promise.reject(new Error('getUserMedia not supported')));
 
                     const audioPromise = (async ()=>{
                         try{
@@ -140,16 +154,46 @@
                     const [camResult] = await Promise.allSettled([cameraPromise, audioPromise]);
 
                     if (camResult && camResult.status === 'fulfilled'){
-                        const stream = camResult.value;
-                        const camVideo = document.querySelector('.input_video');
-                        if (camVideo){
-                            camVideo.srcObject = stream;
+                        const result = camResult.value;
+                        let camVideo = document.querySelector('.input_video');
+
+                        // If the helper returned a MediaStream, attach it directly.
+                        if (result && result instanceof MediaStream){
+                            if (!camVideo){
+                                camVideo = document.createElement('video');
+                                camVideo.className = 'input_video';
+                                camVideo.style.display = 'none';
+                                document.body.appendChild(camVideo);
+                            }
                             camVideo.playsInline = true;
                             camVideo.muted = true;
-                            camVideo.play().catch(()=>{});
+                            try{ camVideo.srcObject = result; }catch(e){ console.warn('srcObject attach failed', e); }
+                            // Try to start playback immediately; many browsers will begin rendering
+                            // frames faster if `play()` is awaited and the element is configured.
+                            camVideo.play().then(()=>{
+                                document.dispatchEvent(new Event('camera-ready'));
+                            }).catch(()=>{
+                                // Still dispatch so other code can attempt to read frames
+                                document.dispatchEvent(new Event('camera-ready'));
+                            });
+
+                        // If the fallback returned a video element (file fallback), use it.
+                        }else if (result && result.videoElement){
+                            // Remove existing camVideo and insert the provided one so downstream
+                            // listeners/readers see the active element.
+                            if (camVideo && camVideo.parentNode) camVideo.parentNode.removeChild(camVideo);
+                            const provided = result.videoElement;
+                            provided.classList.add('input_video');
+                            provided.style.display = 'none';
+                            document.body.appendChild(provided);
+                            provided.play().then(()=> document.dispatchEvent(new Event('camera-ready'))).catch(()=> document.dispatchEvent(new Event('camera-ready')));
+                        }else{
+                            console.warn('Camera result is not a MediaStream or fallback video', result);
+                            document.dispatchEvent(new Event('camera-ready'));
                         }
                     } else {
                         console.warn('Camera request failed or was denied', camResult && camResult.reason);
+                        document.dispatchEvent(new Event('camera-ready'));
                     }
                 }catch(e){ console.warn('Start handler error', e); }
 
@@ -201,12 +245,10 @@
             }
 
             // Resume background audio when camera permission is granted and the
-            // camera input video starts playing. Some browsers pause audio when
-            // the camera permission prompt appears; resuming when the camera
-            // becomes active improves UX.
+            // camera input video starts playing. Also dispatch a `camera-ready`
+            // event which the main hand-tracking code can listen to to begin
+            // processing as soon as frames are available.
             (function(){
-                const camVideo = document.querySelector('.input_video');
-                if (!camVideo) return;
                 const resumeAfterCamera = async () => {
                     try{
                         const bgEl = document.getElementById('bg-music');
@@ -215,8 +257,20 @@
                         if (bgEl && bgEl.paused){ await bgEl.play().catch(()=>{}); }
                     }catch(e){ console.warn('Resuming audio after camera grant failed', e); }
                 };
-                camVideo.addEventListener('loadedmetadata', resumeAfterCamera, { once:true });
-                camVideo.addEventListener('playing', resumeAfterCamera, { once:true });
+
+                // Listen for the custom camera-ready event fired after stream attach/play
+                document.addEventListener('camera-ready', ()=>{
+                    resumeAfterCamera();
+                }, { once:true });
+
+                // Also attach to any .input_video element events in case it's already present
+                const camVideo = document.querySelector('.input_video');
+                if (camVideo){
+                    const onceReady = ()=> document.dispatchEvent(new Event('camera-ready'));
+                    camVideo.addEventListener('loadeddata', onceReady, { once:true });
+                    camVideo.addEventListener('canplay', onceReady, { once:true });
+                    camVideo.addEventListener('playing', onceReady, { once:true });
+                }
             })();
         })();
     </script>
@@ -298,6 +352,140 @@
                 "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
+    </script>
+
+    <script>
+        // Compatibility helper for legacy mobile webviews and older browsers.
+        (function(){
+            // WebGL context helper: try webgl2, webgl, experimental-webgl
+            window.getWebGLContext = function(canvas, opts){
+                if (!canvas) return null;
+                const names = ['webgl2','webgl','experimental-webgl'];
+                for (let i=0;i<names.length;i++){
+                    try{
+                        const ctx = canvas.getContext(names[i], opts);
+                        if (ctx) return ctx;
+                    }catch(e){}
+                }
+                return null;
+            };
+
+            // Polyfill navigator.mediaDevices.getUserMedia for older prefixed APIs
+            if (typeof navigator !== 'undefined'){
+                if (!navigator.mediaDevices) navigator.mediaDevices = {};
+                if (!navigator.mediaDevices.getUserMedia){
+                    const getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.getUserMedia;
+                    if (getUserMedia){
+                        navigator.mediaDevices.getUserMedia = function(constraints){
+                            return new Promise(function(resolve, reject){
+                                getUserMedia.call(navigator, constraints, resolve, reject);
+                            });
+                        };
+                    }
+                }
+            }
+
+            // Unified camera request helper with fallbacks for webview shells
+            window.requestCameraStream = async function(constraints){
+                constraints = constraints || { video: { facingMode: 'user' }, audio: false };
+                try{
+                    return await navigator.mediaDevices.getUserMedia(constraints);
+                }catch(err){
+                    // Retry with relaxed constraints
+                    try{ return await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }catch(_){ }
+
+                    // Fallback: use file input with capture attribute (works in many embedded shells)
+                    return new Promise((resolve, reject)=>{
+                        let input = document.getElementById('__camera_file_fallback');
+                        if (!input){
+                            input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = 'video/*,image/*';
+                            input.capture = 'environment';
+                            input.id = '__camera_file_fallback';
+                            input.style.display = 'none';
+                            document.body.appendChild(input);
+                        }
+                        input.onchange = function(e){
+                            const file = input.files && input.files[0];
+                            if (!file) return reject(new Error('No file selected'));
+                            const videoEl = document.createElement('video');
+                            videoEl.muted = true;
+                            videoEl.playsInline = true;
+                            videoEl.src = URL.createObjectURL(file);
+                            videoEl.addEventListener('loadedmetadata', function(){
+                                // Resolve with an object that mimics a MediaStream consumer
+                                resolve({ fallbackFile: file, videoElement: videoEl });
+                            }, { once:true });
+                            videoEl.addEventListener('error', function(){ reject(new Error('Failed to load selected file')); }, { once:true });
+                            videoEl.load();
+                        };
+                        input.click();
+                    });
+                }
+            };
+
+            // Detect embedded webviews (WeChat/QQ) and set a body class for optional styling
+            try{
+                const ua = navigator.userAgent || '';
+                if (/MicroMessenger|QQ\//i.test(ua)) document.body.classList.add('embedded-webview');
+            }catch(e){}
+
+            // Show a minimal message when WebGL is not available
+            function checkWebGLSupport(){
+                const canvas = document.createElement('canvas');
+                const gl = window.getWebGLContext(canvas);
+                    if (!gl){
+                    const el = document.createElement('div');
+                    el.style.position = 'fixed'; el.style.left = '0'; el.style.right = '0'; el.style.top = '0'; el.style.bottom = '0';
+                    el.style.zIndex = '99999';
+                    el.style.display = 'flex'; el.style.alignItems = 'center'; el.style.justifyContent = 'center';
+
+                    el.innerHTML = `
+                        <style>
+                            #webgl-christmas-overlay{position:fixed;inset:0;background:linear-gradient(180deg,#050505 0%, #111 60%);display:flex;align-items:center;justify-content:center;padding:20px;}
+                            #webgl-christmas-card{max-width:720px;width:100%;background:linear-gradient(135deg,#0b2a16 0%, #123b1f 100%);border-radius:12px;padding:24px;color:#fff;box-shadow:0 8px 30px rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.04);font-family:Courier,monospace}
+                            #webgl-christmas-card h2{margin:0 0 8px;color:#ffd6e8;text-shadow:0 2px 8px rgba(255,111,174,0.08)}
+                            #webgl-christmas-card p{opacity:0.95;margin:8px 0 14px;line-height:1.5}
+                            .webgl-actions{display:flex;gap:10px;justify-content:center;margin-top:14px}
+                            .webgl-btn{background:linear-gradient(180deg,#ff6fae,#ff4f9a);border:none;padding:10px 14px;border-radius:8px;color:#111;font-weight:700;cursor:pointer;box-shadow:0 6px 18px rgba(255,111,174,0.18)}
+                            .webgl-ghost{background:transparent;border:1px solid rgba(255,255,255,0.12);color:#fff;padding:10px 14px;border-radius:8px;cursor:pointer}
+                            .webgl-tips{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:12px;opacity:0.95}
+                            .webgl-tip{background:rgba(255,255,255,0.04);padding:8px 10px;border-radius:8px;font-size:13px}
+                            .santa-emoji{font-size:28px;margin-right:8px}
+                        </style>
+                        <div id="webgl-christmas-overlay">
+                            <div id="webgl-christmas-card">
+                                <div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px">
+                                    <div class="santa-emoji">🎄</div>
+                                    <h2>WebGL Not Available</h2>
+                                </div>
+                                <p>Ho ho — your browser doesn\'t appear to support WebGL or the required graphics features for this experience. For the best results open this page in your device\'s system browser (Safari / Chrome) or update your webview shell.</p>
+                                <div class="webgl-tips">
+                                    <div class="webgl-tip">Open in <strong>Safari</strong> for best iOS performance</div>
+                                    <div class="webgl-tip">Use <strong>Chrome</strong> on Android</div>
+                                    <div class="webgl-tip">Disable low-power / data-saving modes</div>
+                                </div>
+                                <div class="webgl-actions">
+                                    <button class="webgl-btn webgl-retry">Retry</button>
+                                    <button class="webgl-ghost webgl-close">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(el);
+
+                    // Wire up buttons
+                    setTimeout(()=>{
+                        const retry = document.querySelector('.webgl-retry');
+                        const close = document.querySelector('.webgl-close');
+                        if (retry) retry.addEventListener('click', ()=> location.reload());
+                        if (close) close.addEventListener('click', ()=> { el.remove(); });
+                    }, 50);
+                }
+            }
+            if (document.readyState === 'complete' || document.readyState === 'interactive') checkWebGLSupport(); else document.addEventListener('DOMContentLoaded', checkWebGLSupport);
+        })();
     </script>
 
     <script type="module" src="./main.js"></script>
