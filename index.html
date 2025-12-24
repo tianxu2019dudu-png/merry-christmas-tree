@@ -21,6 +21,27 @@
             z-index: 1;
         }
 
+        /* Poster pseudo-element: covers the canvas until the video texture provides frames.
+           Using a pseudo-element allows smooth opacity transitions without DOM reflow. */
+        #canvas-container::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900'><rect width='100%25' height='100%25' fill='%23050505'/><text x='50%25' y='50%25' fill='%23ff6fae' font-size='28' text-anchor='middle' font-family='Arial' dominant-baseline='middle'>Loading%20video%E2%80%A6</text></svg>");
+            background-size: cover;
+            background-position: center;
+            opacity: 1;
+            transition: opacity 600ms ease;
+        }
+
+        /* When hidden, smoothly fade the poster out */
+        #canvas-container.poster-hidden::before { opacity: 0; }
+
+        /* Ensure the renderer canvas appears above the poster pseudo-element */
+        #canvas-container canvas { position: relative; z-index: 1; }
+
         /* Overlay for initial interaction (Audio Context requirement) */
         #overlay {
             position: absolute;

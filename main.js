@@ -24,11 +24,48 @@ async function initMediaPipeHands() {
     }
     if (hands) return hands;
     if (!window.Hands) {
-        // load the MediaPipe Hands script which exposes `window.Hands`
-        await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
+        // Try multiple sources for MediaPipe Hands to avoid CDN/storage blocking
+        const candidates = [
+            'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',
+            'https://unpkg.com/@mediapipe/hands/hands.js',
+            './vendor/mediapipe/hands.js'
+        ];
+        let lastErr = null;
+        let chosenBase = null;
+        for (const url of candidates){
+            try{
+                await loadScript(url);
+                // If script loaded and defined window.Hands, choose base path for assets
+                if (window.Hands) {
+                    if (url.startsWith('http')) {
+                        // strip filename
+                        chosenBase = url.replace(/hands\.js$/,'');
+                    } else {
+                        chosenBase = url.replace(/hands\.js$/,'');
+                    }
+                    break;
+                }
+            }catch(err){
+                lastErr = err;
+                console.warn('Failed to load MediaPipe Hands from', url, err && err.message ? err.message : err);
+                // give next candidate a chance
+            }
+        }
+        if (!window.Hands){
+            // If the error appears related to Tracking Prevention or storage access,
+            // show a helpful message and surface the original error.
+            const errMsg = lastErr && lastErr.message ? lastErr.message : 'Unknown error loading MediaPipe Hands';
+            if (loadingEl) {
+                loadingEl.style.display = 'block';
+                loadingEl.textContent = 'Failed to load hand model: ' + errMsg + '. Try hosting MediaPipe assets locally or disable tracking-prevention for this site.';
+            }
+            throw new Error('MediaPipe Hands not available after trying multiple CDNs: ' + errMsg);
+        }
     }
     if (!window.Hands) throw new Error('MediaPipe Hands not available on window after script load');
-    hands = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    // locateFile should point to the same base where the hands assets (WASM, tflite, data) live.
+    const locateFileBase = (typeof chosenBase === 'string' && chosenBase.length) ? chosenBase : 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/';
+    hands = new window.Hands({locateFile: (file) => `${locateFileBase}${file}`});
     hands.setOptions({
         maxNumHands: 1,
         modelComplexity: 1,
@@ -823,7 +860,16 @@ const mediaCamera = (function(){
                 loadingEl.textContent = 'Requesting camera permission...';
             }
             // Prefer unified helper (works with embedded webviews/file fallback)
-            const constraints = { video: { width: 640, height: 480 }, audio: false };
+            // Use low initial resolution and framerate for a faster camera warmup on mobile.
+            const constraints = {
+                video: {
+                    width: { ideal: 480 },
+                    height: { ideal: 360 },
+                    frameRate: { ideal: 15 },
+                    facingMode: 'user'
+                },
+                audio: false
+            };
             const attemptGetStream = async (attempts = 3) => {
                 for (let i = 0; i < attempts; i++){
                     try{
@@ -846,9 +892,12 @@ const mediaCamera = (function(){
 
             // Attach stream and try to start playback; wait for 'playing' or 'loadeddata' with a small timeout
             inputVideo.srcObject = stream;
+            // Fast reveal: mark video as ready once the camera stream is attached
+            try{ ReadyManager.setVideoReady(); }catch(e){}
             try{ inputVideo.muted = true; inputVideo.playsInline = true; }catch(e){}
 
-            const waitForVideoPlayable = (timeout = 1200) => new Promise((resolve, reject) => {
+            // Shorter timeout so mobile devices don't stall the UI while the decoder warms up.
+            const waitForVideoPlayable = (timeout = 600) => new Promise((resolve, reject) => {
                 let settled = false;
                 const cleanup = () => {
                     inputVideo.removeEventListener('playing', onPlay);
@@ -869,10 +918,26 @@ const mediaCamera = (function(){
                 }, timeout);
             });
 
-            await waitForVideoPlayable(1200);
+            await waitForVideoPlayable(600);
 
             running = true;
             if (loadingEl) loadingEl.textContent = 'Camera started — waiting for frames...';
+
+            // Progressive upgrade: after warmup, try to upgrade resolution for better quality.
+            (async () => {
+                try {
+                    await new Promise(r => setTimeout(r, 1500)); // allow a few frames to arrive
+                    if (!stream) return;
+                    const videoTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+                    if (!videoTrack || typeof videoTrack.applyConstraints !== 'function') return;
+                    const upgrade = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+                    await videoTrack.applyConstraints(upgrade).catch(()=>{});
+                    console.log('Attempted to upgrade camera constraints for higher-res preview');
+                } catch (e) {
+                    // ignore upgrade failures — keep low-res stream which is faster on mobile
+                    console.warn('Camera upgrade failed or not supported:', e);
+                }
+            })();
 
             async function frameLoop() {
                 if (!running) return;
@@ -1063,6 +1128,7 @@ function onHandsResults(results) {
  */
 const clock = new THREE.Clock();
 let _prevMode = STATE.mode; // track mode changes to trigger side effects (like video play)
+let __posterHidden = false; // track whether we've hidden the poster already
 
 function animate() {
     requestAnimationFrame(animate);
@@ -1167,6 +1233,23 @@ function animate() {
     try {
         if (typeof videoTexture !== 'undefined' && videoEl && !videoEl.paused && videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             videoTexture.needsUpdate = true;
+
+            // On first successful texture update, fade out the poster smoothly
+            try{
+                if (!__posterHidden) {
+                    __posterHidden = true;
+                    const containerEl = document.getElementById('canvas-container');
+                    if (containerEl) {
+                        containerEl.classList.add('poster-hidden');
+                        // remove the class after transition to avoid keeping DOM in modified state
+                        const t = setTimeout(()=>{
+                            try { containerEl.classList.remove('poster-hidden'); }catch(e){}
+                            // keep poster visually gone by setting inline background to none on ::before isn't possible,
+                            // so we rely on opacity=0; leaving the class removed keeps DOM clean while opacity already transitioned.
+                        }, 700);
+                    }
+                }
+            }catch(e){ /* ignore poster hide errors */ }
 
         // Fallback stutter detection: if currentTime isn't advancing for a short period,
         // show the loading indicator to indicate buffering or network issues.
