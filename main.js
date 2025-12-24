@@ -838,9 +838,12 @@ function animate() {
     const targetZ = (STATE.mode === 'SCATTER') ? 0.5 : -5;
     videoPlane.position.z = THREE.MathUtils.lerp(videoPlane.position.z, targetZ, 0.06);
 
-    // Ensure the video texture updates while playing so it appears
-    if (typeof videoTexture !== 'undefined' && videoEl && !videoEl.paused) {
-        videoTexture.needsUpdate = true;
+    // Ensure the video texture updates while playing so it appears.
+    // Only update when the video element has current data to avoid WebGL
+    // errors like `texImage2D: no video` when the element isn't ready.
+    try {
+        if (typeof videoTexture !== 'undefined' && videoEl && !videoEl.paused && videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            videoTexture.needsUpdate = true;
 
         // Fallback stutter detection: if currentTime isn't advancing for a short period,
         // show the loading indicator to indicate buffering or network issues.
@@ -859,6 +862,10 @@ function animate() {
         } catch (e) {
             // ignore
         }
+        }
+    } catch (e) {
+        // If updating the texture throws (no video frames, wrong source), skip this frame
+        console.warn('Skipping videoTexture update due to:', e && e.message ? e.message : e);
     }
 
     // 4. Update Rotation

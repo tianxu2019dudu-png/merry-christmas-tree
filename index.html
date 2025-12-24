@@ -138,11 +138,28 @@
 
                         // Prefer the robust `requestCameraStream` helper (polyfilled below)
                         // which wraps legacy getUserMedia and provides a file-capture fallback
-                        const cameraPromise = (window.requestCameraStream)
-                            ? window.requestCameraStream({ video: { facingMode: 'user' }, audio: false })
-                            : ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-                                ? navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
-                                : Promise.reject(new Error('getUserMedia not supported')));
+                        // Attempt camera with retries on AbortError (some platforms abort
+                        // the request when the permission prompt is shown). This wrapper
+                        // will retry a couple times before giving up.
+                        const attemptCamera = async (constraints, retries = 2) => {
+                            constraints = constraints || { video: { facingMode: 'user' }, audio: false };
+                            for (let i = 0; i <= retries; i++){
+                                try{
+                                    if (window.requestCameraStream) return await window.requestCameraStream(constraints);
+                                    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return await navigator.mediaDevices.getUserMedia(constraints);
+                                    throw new Error('getUserMedia not supported');
+                                }catch(err){
+                                    // If aborted by browser while showing permission prompt, retry a few times
+                                    if ((err && err.name === 'AbortError') && i < retries){
+                                        console.warn('getUserMedia aborted, retrying...', i+1);
+                                        await new Promise(r => setTimeout(r, 300 + i*200));
+                                        continue;
+                                    }
+                                    throw err;
+                                }
+                            }
+                        };
+                        const cameraPromise = attemptCamera({ video: { facingMode: 'user' }, audio: false }, 2);
 
                     const audioPromise = (async ()=>{
                         try{
