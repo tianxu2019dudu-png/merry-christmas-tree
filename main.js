@@ -286,6 +286,32 @@ window.addEventListener('load', async () => {
     }
 });
 
+// Robust audio resume helper: try to resume AudioContext and play the audio element.
+async function tryResumeAudio() {
+    if (!audioEl) return;
+    try{
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC){ window.__ac = window.__ac || new AC(); try{ await window.__ac.resume(); }catch(e){} }
+    }catch(e){/* ignore */}
+    try{
+        if (audioEl.paused) await audioEl.play();
+    }catch(e){ /* ignore play errors */ }
+}
+
+// Page Visibility: when the page becomes visible, attempt to resume audio.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible'){
+        tryResumeAudio();
+    }
+});
+
+// Attempt to resume audio when camera becomes available or starts playing.
+document.addEventListener('camera-ready', ()=>{ tryResumeAudio(); });
+if (inputVideo){
+    inputVideo.addEventListener('playing', ()=>{ tryResumeAudio(); });
+    inputVideo.addEventListener('loadedmetadata', ()=>{ tryResumeAudio(); });
+}
+
 /**
  * THREE.JS SETUP
  */
